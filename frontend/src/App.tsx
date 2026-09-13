@@ -7,9 +7,39 @@ import {
   saveBlob,
   getAttainment,
   downloadTabulation,
+  getSheetStatus,
+  advanceSheet,
   type ProcessResult,
 } from './api';
-import type { Course, Assessment, CourseAttainmentReport, MarkValidationError } from './types';
+import type {
+  Course,
+  Assessment,
+  CourseAttainmentReport,
+  GradingSheet,
+  MarkValidationError,
+} from './types';
+
+const WORKFLOW_STEPS = ['draft', 'submitted', 'moderated', 'verified', 'published'] as const;
+const NEXT_STATUS: Record<string, string> = {
+  draft: 'submitted',
+  submitted: 'moderated',
+  moderated: 'verified',
+  verified: 'published',
+};
+const STATUS_LABELS: Record<string, string> = {
+  draft: 'Draft',
+  submitted: 'Submitted',
+  moderated: 'Moderated',
+  verified: 'Verified',
+  published: 'Published',
+};
+const STATUS_COLORS: Record<string, string> = {
+  draft: 'bg-gray-100 text-gray-700',
+  submitted: 'bg-blue-100 text-blue-700',
+  moderated: 'bg-amber-100 text-amber-700',
+  verified: 'bg-purple-100 text-purple-700',
+  published: 'bg-green-100 text-green-700',
+};
 
 export default function App() {
   // The uploaded result gives us courseId + assessmentId to view results
@@ -26,6 +56,10 @@ export default function App() {
   const [attainment, setAttainment] = useState<CourseAttainmentReport | null>(null);
   const [attainmentLoading, setAttainmentLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  // Threshold configuration (default 60%)
+  const [threshold, setThreshold] = useState(60);
 
   // Tabulation signature fields
   const [preparedBy, setPreparedBy] = useState('');
@@ -37,6 +71,16 @@ export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+
+  // Approval workflow state
+  const [sheet, setSheet] = useState<GradingSheet | null>(null);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [workflowActor, setWorkflowActor] = useState('');
+
+  function showSuccess(msg: string) {
+    setSuccess(msg);
+    setTimeout(() => setSuccess(null), 5000);
+  }
 
   // Load courses on mount
   useEffect(() => {
@@ -51,23 +95,36 @@ export default function App() {
     listAssessments(browseCourseId).then(setAssessments).catch((e) => setError(e.message));
   }, [browseCourseId]);
 
-  // Load attainment when active course/assessment changes
+  // Load attainment + sheet status when active course/assessment changes
   const loadAttainment = useCallback(async () => {
     if (activeCourseId == null || activeAssessmentId == null) return;
     setAttainmentLoading(true);
     setError(null);
     try {
-      setAttainment(await getAttainment(activeCourseId, activeAssessmentId));
+      setAttainment(await getAttainment(activeCourseId, activeAssessmentId, threshold));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load attainment');
     } finally {
       setAttainmentLoading(false);
     }
-  }, [activeCourseId, activeAssessmentId]);
+  }, [activeCourseId, activeAssessmentId, threshold]);
+
+  const loadSheet = useCallback(async () => {
+    if (activeAssessmentId == null) return;
+    setSheetLoading(true);
+    try {
+      setSheet(await getSheetStatus(activeAssessmentId));
+    } catch {
+      setSheet(null);
+    } finally {
+      setSheetLoading(false);
+    }
+  }, [activeAssessmentId]);
 
   useEffect(() => {
     loadAttainment();
-  }, [loadAttainment]);
+    loadSheet();
+  }, [loadAttainment, loadSheet]);
 
   // When upload succeeds, set active course/assessment
   useEffect(() => {
@@ -92,10 +149,13 @@ export default function App() {
     if (!file) return;
     setUploadBusy(true);
     setError(null);
+    setSuccess(null);
     try {
       const r = await processTemplate(file);
       setProcessResult(r);
-      if (!r.ok) {
+      if (r.ok) {
+        showSuccess('Records created successfully. Results are ready below.');
+      } else {
         setError(`Validation failed — ${r.errors.length} error(s) found. Fix and re-upload.`);
       }
     } catch (e) {
@@ -114,19 +174,37 @@ export default function App() {
         preparedBy: preparedBy || undefined,
         moderatorBy: moderatorBy || undefined,
         chairmanBy: chairmanBy || undefined,
+        threshold,
       });
       saveBlob(blob, 'Tabulation_Sheet.pdf');
+      showSuccess('Tabulation PDF downloaded.');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'PDF generation failed');
+      setError(e instanceof Error ? e.message : 'PDF generation failed. Is Chrome/Edge installed?');
     } finally {
       setPdfBusy(false);
     }
   }
 
+  async function handleAdvanceWorkflow() {
+    if (activeAssessmentId == null || !sheet) return;
+    const next = NEXT_STATUS[sheet.status];
+    if (!next) return;
+    const actor = workflowActor.trim() || 'Teacher';
+    setError(null);
+    try {
+      await advanceSheet(activeAssessmentId, next as 'submitted' | 'moderated' | 'verified' | 'published', actor);
+      showSuccess(`Sheet advanced to "${STATUS_LABELS[next]}".`);
+      await loadSheet();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Workflow update failed');
+    }
+  }
+
   const hardErrors = processResult?.errors ?? [];
+  const activeAssessment = assessments.find((a) => a.id === activeAssessmentId);
 
   return (
-    <div className="min-h-full">
+    <div className="min-h-full bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto max-w-5xl px-6 py-4">
           <h1 className="text-xl font-bold text-slate-900">OBE Evaluation System</h1>
@@ -140,6 +218,11 @@ export default function App() {
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
+          </div>
+        )}
+        {success && (
+          <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+            {success}
           </div>
         )}
 
@@ -254,9 +337,23 @@ export default function App() {
               <div className="flex-1">
                 <div className="mb-4 flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-slate-900">CO Attainment</h2>
-                  <button onClick={loadAttainment} className="rounded-lg border border-slate-300 px-4 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
-                    Refresh
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 text-sm text-slate-600">
+                      Threshold:
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={threshold}
+                        onChange={(e) => setThreshold(Number(e.target.value) || 0)}
+                        className="w-16 rounded-lg border border-slate-300 px-2 py-1 text-sm"
+                      />
+                      %
+                    </label>
+                    <button onClick={loadAttainment} className="rounded-lg border border-slate-300 px-4 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
+                      Refresh
+                    </button>
+                  </div>
                 </div>
 
                 {attainmentLoading ? (
@@ -266,25 +363,31 @@ export default function App() {
                     <p className="text-sm text-slate-500">
                       {attainment.course_code} — {attainment.course_title} · {attainment.assessment_title} · Threshold: {attainment.threshold}%
                     </p>
-                    {attainment.co_attainments.map((co) => (
-                      <div key={co.co_id} className="rounded-lg border border-slate-200 p-4">
-                        <div className="mb-2 flex items-center justify-between">
-                          <div>
-                            <span className="font-mono font-semibold">{co.co_code}</span>
-                            <span className="ml-2 text-sm text-slate-500">{co.co_description}</span>
+                    {attainment.co_attainments.length === 0 ? (
+                      <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                        No CO data. Ensure students are enrolled and marks are entered.
+                      </p>
+                    ) : (
+                      attainment.co_attainments.map((co) => (
+                        <div key={co.co_id} className="rounded-lg border border-slate-200 p-4">
+                          <div className="mb-2 flex items-center justify-between">
+                            <div>
+                              <span className="font-mono font-semibold">{co.co_code}</span>
+                              <span className="ml-2 text-sm text-slate-500">{co.co_description}</span>
+                            </div>
+                            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${co.met_threshold ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                              {co.attainment_percentage.toFixed(1)}% · {co.met_threshold ? 'Attained' : 'Not Attained'}
+                            </span>
                           </div>
-                          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${co.met_threshold ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                            {co.attainment_percentage.toFixed(1)}% · {co.met_threshold ? 'Attained' : 'Not Attained'}
-                          </span>
+                          <div className="h-5 w-full overflow-hidden rounded-full bg-slate-100">
+                            <div className={`h-full rounded-full ${co.met_threshold ? 'bg-green-500' : 'bg-red-400'}`} style={{ width: `${Math.min(co.attainment_percentage, 100)}%` }} />
+                          </div>
+                          <p className="mt-1 text-xs text-slate-400">
+                            {co.students_attained} of {co.total_students} students attained
+                          </p>
                         </div>
-                        <div className="h-5 w-full overflow-hidden rounded-full bg-slate-100">
-                          <div className={`h-full rounded-full ${co.met_threshold ? 'bg-green-500' : 'bg-red-400'}`} style={{ width: `${Math.min(co.attainment_percentage, 100)}%` }} />
-                        </div>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {co.students_attained} of {co.total_students} students attained
-                        </p>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-slate-400">No data yet.</p>
@@ -312,6 +415,104 @@ export default function App() {
                 <button onClick={handleDownloadPdf} disabled={pdfBusy} className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50">
                   {pdfBusy ? 'Generating PDF...' : 'Download Tabulation PDF'}
                 </button>
+                <p className="mt-2 text-xs text-slate-400">
+                  Uses threshold: {threshold}%. PDF requires Chrome or Edge installed.
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Step 5: Approval Workflow */}
+        {activeCourseId != null && activeAssessmentId != null && (
+          <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-start gap-4">
+              <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">5</div>
+              <div className="flex-1">
+                <h2 className="text-lg font-semibold text-slate-900">Approval Workflow</h2>
+                <p className="mb-4 text-sm text-slate-600">
+                  Track the grading sheet through the approval pipeline. Advance the status once each stage is complete.
+                </p>
+
+                {/* Workflow progress bar */}
+                {sheetLoading ? (
+                  <p className="text-sm text-slate-500">Loading...</p>
+                ) : sheet ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-1">
+                      {WORKFLOW_STEPS.map((step, i) => {
+                        const currentIndex = WORKFLOW_STEPS.indexOf(sheet.status as typeof WORKFLOW_STEPS[number]);
+                        const isDone = i <= currentIndex;
+                        const isCurrent = i === currentIndex;
+                        return (
+                          <div key={step} className="flex flex-1 items-center">
+                            <div className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${
+                              isDone ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'
+                            } ${isCurrent ? 'ring-2 ring-blue-400 ring-offset-2' : ''}`}>
+                              {i + 1}
+                            </div>
+                            {i < WORKFLOW_STEPS.length - 1 && (
+                              <div className={`h-1 flex-1 ${i < currentIndex ? 'bg-blue-600' : 'bg-slate-200'}`} />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="flex justify-between text-xs">
+                      {WORKFLOW_STEPS.map((step) => (
+                        <span key={step} className={`font-medium ${sheet.status === step ? 'text-blue-600' : 'text-slate-400'}`}>
+                          {STATUS_LABELS[step]}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Current status badge */}
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-slate-600">Current status:</span>
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_COLORS[sheet.status] ?? 'bg-gray-100 text-gray-700'}`}>
+                        {STATUS_LABELS[sheet.status] ?? sheet.status}
+                      </span>
+                    </div>
+
+                    {/* Audit trail */}
+                    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600">
+                      <table className="w-full">
+                        <tbody>
+                          {sheet.prepared_by && <tr><td className="py-0.5 font-medium">Prepared by:</td><td>{sheet.prepared_by}</td><td className="text-slate-400">{sheet.submitted_at ? new Date(sheet.submitted_at).toLocaleString() : ''}</td></tr>}
+                          {sheet.moderated_by && <tr><td className="py-0.5 font-medium">Moderated by:</td><td>{sheet.moderated_by}</td><td className="text-slate-400">{sheet.moderated_at ? new Date(sheet.moderated_at).toLocaleString() : ''}</td></tr>}
+                          {sheet.verified_by && <tr><td className="py-0.5 font-medium">Verified by:</td><td>{sheet.verified_by}</td><td className="text-slate-400">{sheet.verified_at ? new Date(sheet.verified_at).toLocaleString() : ''}</td></tr>}
+                          {sheet.published_by && <tr><td className="py-0.5 font-medium">Published by:</td><td>{sheet.published_by}</td><td className="text-slate-400">{sheet.published_at ? new Date(sheet.published_at).toLocaleString() : ''}</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Advance button */}
+                    {sheet.status !== 'published' && NEXT_STATUS[sheet.status] && (
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="text"
+                          placeholder="Your name (for the audit trail)"
+                          value={workflowActor}
+                          onChange={(e) => setWorkflowActor(e.target.value)}
+                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                        />
+                        <button
+                          onClick={handleAdvanceWorkflow}
+                          className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+                        >
+                          Advance to "{STATUS_LABELS[NEXT_STATUS[sheet.status]]}"
+                        </button>
+                      </div>
+                    )}
+                    {sheet.status === 'published' && (
+                      <p className="rounded-lg border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-700">
+                        This grading sheet is published. No further changes allowed.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400">No grading sheet for this assessment.</p>
+                )}
               </div>
             </div>
           </section>
@@ -347,6 +548,11 @@ export default function App() {
                 ))}
               </select>
             </div>
+            {activeAssessment && (
+              <p className="mt-2 text-xs text-slate-400">
+                Viewing: {activeAssessment.title} · {activeAssessment.total_marks} marks · {activeAssessment.exam_date || 'no exam date'}
+              </p>
+            )}
           </section>
         )}
       </main>

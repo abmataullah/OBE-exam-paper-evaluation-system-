@@ -71,12 +71,13 @@ export async function getAttainment(
 export async function downloadTabulation(
   courseId: number,
   assessmentId: number,
-  sigs?: { preparedBy?: string; moderatorBy?: string; chairmanBy?: string }
+  sigs?: { preparedBy?: string; moderatorBy?: string; chairmanBy?: string; threshold?: number }
 ): Promise<Blob> {
   const params = new URLSearchParams();
   if (sigs?.preparedBy) params.set('preparedBy', sigs.preparedBy);
   if (sigs?.moderatorBy) params.set('moderatorBy', sigs.moderatorBy);
   if (sigs?.chairmanBy) params.set('chairmanBy', sigs.chairmanBy);
+  if (sigs?.threshold != null) params.set('threshold', String(sigs.threshold));
   const q = params.toString() ? `?${params.toString()}` : '';
   const res = await fetch(
     `${BASE}/courses/${courseId}/assessments/${assessmentId}/tabulation${q}`
@@ -91,6 +92,22 @@ export async function getSheetStatus(
   const res = await fetch(`${BASE}/assessments/${assessmentId}/sheet`);
   if (res.status === 404) return null;
   return json<GradingSheet>(res);
+}
+
+/** Advance the grading-sheet approval workflow.
+ *  status: 'submitted' | 'moderated' | 'verified' | 'published'
+ *  actor:  name of the person performing the action */
+export async function advanceSheet(
+  assessmentId: number,
+  status: 'submitted' | 'moderated' | 'verified' | 'published',
+  actor: string
+): Promise<{ ok: boolean; previous: string; next: string }> {
+  const res = await fetch(`${BASE}/assessments/${assessmentId}/sheet`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ status, actor }),
+  });
+  return json(res);
 }
 
 /** Trigger a browser download from a Blob. */

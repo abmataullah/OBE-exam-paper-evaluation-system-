@@ -1,0 +1,70 @@
+{
+  "name": "obe-evaluator-desktop",
+  "version": "1.0.0",
+  "description": "OBE Evaluation System - Desktop Edition (Offline, Free). Outcome-Based Education grading, CO attainment and tabulation sheets for the University of Chittagong.",
+  "author": "Banglai Cloud <abm.ataullah@gmail.com>",
+  "homepage": "https://banglai.cloud/homemade-software",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "icon": "node scripts/make-icon.js",
+    "build:all": "node scripts/build-all.js",
+    "build:electron": "tsc",
+    "start": "electron .",
+    "dist": "npm run build:all && electron-builder --win --x64",
+    "dist:portable": "npm run build:all && electron-builder --win portable --x64"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.12.0",
+    "puppeteer": "^23.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.5.0"
+  },
+  "build": {
+    "appId": "cloud.banglai.obe-evaluator",
+    "productName": "OBE Evaluator",
+    "copyright": "Copyright (c) 2026 Banglai Cloud",
+    "directories": { "output": "release" },
+    "files": [
+      "dist/**/*",
+      "!node_modules/puppeteer/.local-chromium/**",
+      "!node_modules/**/*.md",
+      "!node_modules/**/test/**",
+      "!node_modules/**/tests/**"
+    ],
+    "asarUnpack": [
+      "node_modules/@electric-sql/pglite/**"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "resources/icon.png",
+      "artifactName": "OBE-Evaluator-${version}-${arch}-setup.${ext}",
+      "signAndEditExecutable": false,
+      "verifyUpdateCodeSignature": false
+    },
+    "portable": {
+      "artifactName": "OBE-Evaluator-${version}-portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OBE Evaluator"
+    }
+  }
+}

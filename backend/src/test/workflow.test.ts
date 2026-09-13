@@ -521,4 +521,97 @@ describe('Bug fixes — regression tests', () => {
     const titleCell = instr.getCell(1, 1).value;
     assert.match(String(titleCell), /How to fill/);
   });
+
+  // Bug A: assessmentType with capital letter must not crash with enum error
+  test('Bug A: Type=Midterm (capital M) is accepted, not enum error', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 993';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Cap Type Test';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Midterm Cap';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'Midterm'; // capital M
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '33333001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Cap Test';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-captype.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'captype.xlsx');
+    const resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 200, `expected 200, got ${resp.status}`);
+    const body = await resp.json() as { ok: boolean };
+    assert.equal(body.ok, true);
+  });
+
+  // Bug A: invalid assessment type must give a user-friendly error, not enum error
+  test('Bug A: Type=exam (invalid) returns 422 with helpful message', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 992';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Bad Type Test';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Bad Type';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'exam'; // invalid
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '22222001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Bad Type';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-badtype.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'badtype.xlsx');
+    const resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 422);
+    const body = await resp.json() as { ok: boolean; errors: Array<{ message: string }> };
+    assert.equal(body.ok, false);
+    assert.ok(body.errors.some((e) => /invalid/.test(e.message) && /quiz.*midterm/.test(e.message)));
+  });
+
+  // Bug B: duplicate Student IDs must be rejected with a clear error
+  test('Bug B: duplicate Student IDs return 422 with "Duplicate"', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 991';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Dup Roll Test';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Quiz Dup';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    // Two students with same roll
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '11111001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'First';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 8;
+    ws.getCell(L.ROW_STUDENT_FIRST + 1, L.COL_ROLL).value = '11111001'; // duplicate
+    ws.getCell(L.ROW_STUDENT_FIRST + 1, L.COL_NAME).value = 'Second';
+    ws.getCell(L.ROW_STUDENT_FIRST + 1, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-duproll.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'duproll.xlsx');
+    const resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 422);
+    const body = await resp.json() as { ok: boolean; errors: Array<{ message: string }> };
+    assert.equal(body.ok, false);
+    assert.ok(body.errors.some((e) => /Duplicate Student ID/.test(e.message)));
+  });
 });

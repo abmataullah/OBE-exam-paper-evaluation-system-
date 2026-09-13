@@ -238,7 +238,7 @@ export async function generateBlankTemplate(): Promise<{ buffer: Buffer; fileNam
   instr.mergeCells(1, 1, 1, 3);
 
   const steps: [string, string, string][] = [
-    ['1', 'Fill the header block (rows 3-7)', 'Department, Program, Course Code, Course Title, Semester (e.g. 2024-1/2), Exam Date, Assessment Title, Type (quiz/midterm/final/assignment/lab/project), Total Marks.'],
+    ['1', 'Fill the header block (rows 3-7)', 'Department, Program, Course Code, Course Title, Semester (e.g. 2024-1/2), Exam Date, Assessment Title, Type (lowercase: quiz, midterm, final, assignment, lab, or project), Total Marks.'],
     ['2', 'Define questions (rows 11-20)', 'For each question you want to grade, enter its Max Marks (1-100). Leave blank rows for unused questions. The CO column is optional — leave it blank to auto-assign Q1→CO1, Q2→CO2, etc. To map a question to a specific CO, type the CO code (e.g. CO2).'],
     ['3', 'Enter student marks (rows 24+)', 'For each student, enter their Student ID, Name, and marks for each question. Leave a mark blank if the student did not attempt that question (counts as not attained). The Total column auto-calculates.'],
     ['4', 'Save the file', 'Save as .xlsx. Do not rename the "Grading" sheet or change the row layout — the software reads fixed cell positions.'],
@@ -264,8 +264,10 @@ export async function generateBlankTemplate(): Promise<{ buffer: Buffer; fileNam
   instr.mergeCells(notesRow, 1, notesRow, 3);
   const notes: string[] = [
     '• Semester is required — students are enrolled per semester.',
+    '• Assessment Type must be lowercase: quiz, midterm, final, assignment, lab, or project.',
     '• At least one question with max marks > 0 must be defined.',
     '• At least one student with a Student ID must be entered.',
+    '• Each Student ID must be unique — duplicates will be rejected.',
     '• Marks cannot exceed the question max marks or be negative.',
     '• Up to 60 students and 10 questions are supported per template.',
     '• Re-uploading into a moderated/verified/published sheet is blocked. Roll back to "submitted" first.',

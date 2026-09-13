@@ -86,7 +86,7 @@ export default function App() {
 
   // Load courses on mount
   useEffect(() => {
-    listCourses().then(setCourses).catch((e) => setError(e.message));
+    listCourses().then(setCourses).catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
   // Load assessments when browsing
@@ -94,7 +94,7 @@ export default function App() {
     if (browseCourseId == null) return;
     setAssessments([]);
     setActiveAssessmentId(null);
-    listAssessments(browseCourseId).then(setAssessments).catch((e) => setError(e.message));
+    listAssessments(browseCourseId).then(setAssessments).catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [browseCourseId]);
 
   // Load attainment + sheet status when active course/assessment changes

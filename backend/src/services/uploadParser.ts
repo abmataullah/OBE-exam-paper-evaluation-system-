@@ -46,6 +46,9 @@ const COL_ROLL = 2;
 const COL_NAME = 3;
 const COL_Q_FIRST = 4;
 
+// Must match the assessment_type_enum in schema.sql
+const VALID_ASSESSMENT_TYPES = ['quiz', 'midterm', 'assignment', 'lab', 'final', 'project'];
+
 interface ParsedQuestion {
   questionNo: number;
   maxMarks: number;
@@ -114,7 +117,7 @@ function parseTemplate(wb: ExcelJS.Workbook): { data: ParsedTemplate; errors: Ma
   const semester = cellText(ws, ROW_SEMESTER, 2);
   const examDate = cellText(ws, ROW_SEMESTER, 5);
   const assessmentTitle = cellText(ws, ROW_ASSESSMENT, 2);
-  const assessmentType = cellText(ws, ROW_ASSESSMENT, 6) || 'midterm';
+  const assessmentType = (cellText(ws, ROW_ASSESSMENT, 6) || 'midterm').toLowerCase().trim();
   const totalMarks = cellNumber(ws, ROW_ASSESSMENT, 8);
 
   if (!department) errors.push({ row: ROW_DEPT, column: 'Department', student_roll: '', message: 'Department is required.' });
@@ -124,6 +127,9 @@ function parseTemplate(wb: ExcelJS.Workbook): { data: ParsedTemplate; errors: Ma
   if (!assessmentTitle) errors.push({ row: ROW_ASSESSMENT, column: 'Assessment', student_roll: '', message: 'Assessment Title is required.' });
   if (totalMarks == null || totalMarks <= 0) errors.push({ row: ROW_ASSESSMENT, column: 'Total Marks', student_roll: '', message: 'Total Marks must be a positive number.' });
   if (!semester) errors.push({ row: ROW_SEMESTER, column: 'Semester', student_roll: '', message: 'Semester is required (e.g. 2024-1/2). Students are enrolled per semester.' });
+  if (assessmentType && !VALID_ASSESSMENT_TYPES.includes(assessmentType)) {
+    errors.push({ row: ROW_ASSESSMENT, column: 'Type', student_roll: '', message: `Assessment type "${assessmentType}" is invalid. Must be one of: ${VALID_ASSESSMENT_TYPES.join(', ')}.` });
+  }
 
   // Question definitions
   const questions: ParsedQuestion[] = [];
@@ -162,6 +168,26 @@ function parseTemplate(wb: ExcelJS.Workbook): { data: ParsedTemplate; errors: Ma
   }
   if (students.length === 0) {
     errors.push({ row: ROW_STUDENT_FIRST, column: 'Student ID', student_roll: '', message: 'At least one student must be entered.' });
+  }
+
+  // Detect duplicate Student IDs — the DB enforces uniqueness, so the second
+  // entry would silently overwrite the first. Warn the teacher explicitly.
+  const seenRolls = new Map<string, number>(); // roll -> first Excel row
+  for (const s of students) {
+    const firstRow = seenRolls.get(s.roll);
+    if (firstRow !== undefined) {
+      const studentRowIdx = students.indexOf(s);
+      const excelRow = ROW_STUDENT_FIRST + studentRowIdx;
+      errors.push({
+        row: excelRow,
+        column: 'Student ID',
+        student_roll: s.roll,
+        message: `Duplicate Student ID "${s.roll}" — also entered on row ${firstRow}. Each student must have a unique ID.`,
+      });
+    } else {
+      const idx = students.indexOf(s);
+      seenRolls.set(s.roll, ROW_STUDENT_FIRST + idx);
+    }
   }
 
   // Validate marks against question max marks

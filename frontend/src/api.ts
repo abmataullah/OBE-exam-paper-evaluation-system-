@@ -40,11 +40,17 @@ export interface ProcessResult {
   assessmentId: number | null;
 }
 
-/** Upload a filled template — creates all DB records. */
+/** Upload a filled template — creates all DB records.
+ *  Returns the structured body even on 422 (validation errors) so the UI
+ *  can display per-cell errors. Throws only on transport/500 errors. */
 export async function processTemplate(file: File): Promise<ProcessResult> {
   const form = new FormData();
   form.append('file', file);
   const res = await fetch(`${BASE}/process`, { method: 'POST', body: form });
+  // 422 is a structured validation error response, not a transport failure.
+  if (res.status === 422) {
+    return res.json() as Promise<ProcessResult>;
+  }
   return json<ProcessResult>(res);
 }
 

@@ -229,3 +229,204 @@ describe('OBE backend — full workflow', () => {
     assert.match(err.error, /Cannot transition/);
   });
 });
+
+// ============================================================================
+// REGRESSION TESTS — one per bug fix
+// ============================================================================
+
+describe('Bug fixes — regression tests', () => {
+  const blankPath = join(tmpdir(), 'obe-blank.xlsx');
+  const blankPath2 = join(tmpdir(), 'obe-blank2.xlsx');
+
+  // Re-download a fresh blank template for these tests
+  before(async () => {
+    const r = await fetch(`${BASE}/api/template`);
+    writeFileSync(blankPath2, Buffer.from(await r.arrayBuffer()));
+  });
+
+  // Bug 2: blank semester must be rejected with a clear validation error,
+  // not silently produce 0% attainment.
+  test('Bug 2: blank semester returns 422 with "Semester is required"', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 999';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Test Course';
+    ws.getCell(L.ROW_SEMESTER, 2).value = ''; // BLANK semester
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '99999999';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Test Student';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-nosemester.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'nosemester.xlsx');
+    const resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 422);
+    const body = await resp.json() as { ok: boolean; errors: Array<{ message: string }> };
+    assert.equal(body.ok, false);
+    assert.ok(body.errors.some((e) => /Semester is required/.test(e.message)));
+  });
+
+  // Bug 3: custom (non-sequential) CO codes must not crash with 500.
+  test('Bug 3: custom CO codes (Q1→CO2, Q2→CO4) succeed, not 500', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 998';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Custom CO Course';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Midterm';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'midterm';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 25;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_CO).value = 'CO2'; // non-sequential
+    ws.getCell(L.ROW_Q_FIRST + 1, L.COL_Q_MAX).value = 15;
+    ws.getCell(L.ROW_Q_FIRST + 1, L.COL_Q_CO).value = 'CO4'; // non-sequential
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '88888001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Test Student';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 8;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST + 1).value = 12;
+    const outPath = join(tmpdir(), 'obe-customco.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'customco.xlsx');
+    const resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 200, `expected 200, got ${resp.status}`);
+    const body = await resp.json() as { ok: boolean; courseId: number; assessmentId: number };
+    assert.equal(body.ok, true);
+
+    // Verify attainment shows CO2 and CO4 (not CO1/CO3)
+    const att = await fetch(`${BASE}/api/courses/${body.courseId}/assessments/${body.assessmentId}/attainment?threshold=60`);
+    const attBody = await att.json() as { co_attainments: Array<{ co_code: string }> };
+    const coCodes = attBody.co_attainments.map((c) => c.co_code);
+    assert.ok(coCodes.includes('CO2'), 'CO2 present');
+    assert.ok(coCodes.includes('CO4'), 'CO4 present');
+    assert.equal(coCodes.length, 2, 'exactly two COs');
+  });
+
+  // Bug 4: re-uploading into a moderated/verified/published assessment must
+  // be rejected with 409, not silently destroy marks.
+  test('Bug 4: re-upload into moderated sheet returns 409', async () => {
+    // Upload a fresh file
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 997';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Re-upload Guard';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Quiz 1';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '77777001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Guard Test';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-guard1.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    let fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'guard1.xlsx');
+    let resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 200);
+    const body = await resp.json() as { ok: boolean; courseId: number; assessmentId: number };
+
+    // Advance to moderated
+    resp = await fetch(`${BASE}/api/assessments/${body.assessmentId}/sheet`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'moderated', actor: 'Mod' }),
+    });
+    assert.equal(resp.status, 200);
+
+    // Re-upload the same file — must be rejected with 409
+    fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'guard1.xlsx');
+    resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 409);
+    const errBody = await resp.json() as { error: string };
+    assert.match(errBody.error, /already "moderated"/);
+  });
+
+  // Bug 5: met_threshold must be consistent with the rounded attainment %.
+  test('Bug 5: met_threshold matches rounded attainment_percentage', async () => {
+    // Use the first test's course (courseId/assessmentId from outer scope are
+    // not accessible here, so re-upload a fresh one with known data).
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 996';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Rounding Test';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Quiz R';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    // 3 students: 2 score 7/10 (70% >= 67% threshold → attain), 1 scores 5/10 (50% < 67% → not)
+    // → 2/3 = 66.67% → rounded 66.7%. With threshold 67: 66.7 < 67 → met_threshold=false
+    for (let i = 0; i < 3; i++) {
+      const r = L.ROW_STUDENT_FIRST + i;
+      ws.getCell(r, L.COL_ROLL).value = `6666600${i + 1}`;
+      ws.getCell(r, L.COL_NAME).value = `Student ${i + 1}`;
+      ws.getCell(r, L.COL_Q_FIRST).value = i < 2 ? 7 : 5;
+    }
+    const outPath = join(tmpdir(), 'obe-rounding.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'rounding.xlsx');
+    let resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 200);
+    const body = await resp.json() as { ok: boolean; courseId: number; assessmentId: number };
+
+    resp = await fetch(`${BASE}/api/courses/${body.courseId}/assessments/${body.assessmentId}/attainment?threshold=67`);
+    const att = await resp.json() as {
+      co_attainments: Array<{ attainment_percentage: number; met_threshold: boolean }>;
+    };
+    assert.equal(att.co_attainments.length, 1);
+    const co = att.co_attainments[0];
+    // 2 of 3 students attained → 66.666...% → rounded to 66.7
+    assert.equal(co.attainment_percentage, 66.7);
+    // 66.7 < 67 → not met (consistent with the displayed percentage)
+    assert.equal(co.met_threshold, false);
+  });
+
+  // Bug 6: tabulation PDF/HTML must honor the threshold query param.
+  test('Bug 6: tabulation HTML honors ?threshold= param', async () => {
+    // Re-use the rounding test's course (CSE 996) — find it
+    const coursesResp = await fetch(`${BASE}/api/courses`);
+    const courses = await coursesResp.json() as Array<{ id: number; course_code: string }>;
+    const course = courses.find((c) => c.course_code === 'CSE 996');
+    assert.ok(course, 'CSE 996 course exists');
+    const assessResp = await fetch(`${BASE}/api/courses/${course!.id}/assessments`);
+    const assess = await assessResp.json() as Array<{ id: number; title: string }>;
+    assert.ok(assess.length > 0);
+
+    // Default threshold (60) → should show "Threshold: ... 60%"
+    let r = await fetch(`${BASE}/api/courses/${course!.id}/assessments/${assess[0].id}/tabulation?format=html`);
+    let html = await r.text();
+    assert.match(html, /Threshold:/);
+
+    // Custom threshold (75) → the note should mention 75
+    r = await fetch(`${BASE}/api/courses/${course!.id}/assessments/${assess[0].id}/tabulation?format=html&threshold=75`);
+    html = await r.text();
+    assert.match(html, /75%/);
+  });
+});

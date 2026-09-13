@@ -157,6 +157,7 @@ router.get(
       preparedBy: (req.query.preparedBy as string) || undefined,
       moderatorBy: (req.query.moderatorBy as string) || undefined,
       chairmanBy: (req.query.chairmanBy as string) || undefined,
+      threshold: req.query.threshold ? Number(req.query.threshold) : undefined,
     };
     // ?format=html returns the print-ready HTML (preview; no Chrome needed).
     if (req.query.format === 'html') {

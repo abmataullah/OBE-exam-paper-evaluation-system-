@@ -21,6 +21,7 @@
  */
 import ExcelJS from 'exceljs';
 import { withTransaction } from '../db/pool';
+import { HttpError } from './excelGenerator';
 import type { MarkValidationError } from '../types';
 
 const SHEET = 'Grading';
@@ -122,6 +123,7 @@ function parseTemplate(wb: ExcelJS.Workbook): { data: ParsedTemplate; errors: Ma
   if (!courseTitle) errors.push({ row: ROW_COURSE, column: 'Course Title', student_roll: '', message: 'Course Title is required.' });
   if (!assessmentTitle) errors.push({ row: ROW_ASSESSMENT, column: 'Assessment', student_roll: '', message: 'Assessment Title is required.' });
   if (totalMarks == null || totalMarks <= 0) errors.push({ row: ROW_ASSESSMENT, column: 'Total Marks', student_roll: '', message: 'Total Marks must be a positive number.' });
+  if (!semester) errors.push({ row: ROW_SEMESTER, column: 'Semester', student_roll: '', message: 'Semester is required (e.g. 2024-1/2). Students are enrolled per semester.' });
 
   // Question definitions
   const questions: ParsedQuestion[] = [];
@@ -260,24 +262,32 @@ export async function processFilledTemplate(fileBuffer: Buffer): Promise<Process
       courseId = r.rows[0].id;
     }
 
-    // 4. Course Outcomes — auto-create CO1..COn if they don't exist.
-    //    If teacher specified CO codes, use those; otherwise Q1→CO1, Q2→CO2...
-    const coIds = new Map<string, number>();
-    const autoCoCount = new Set(
-      data.questions.map(q => q.coCode).filter(Boolean)
-    ).size || data.questions.length;
+    // 4. Course Outcomes — create the CO codes actually referenced by the
+    //    questions. If the teacher specified CO codes, use those; for
+    //    questions with no CO specified, auto-assign Q1→CO1, Q2→CO2, etc.
+    //    Collect the full set of CO codes needed (deduplicated, ordered).
+    const coCodesNeeded: string[] = [];
+    const seen = new Set<string>();
+    for (const q of data.questions) {
+      const code = q.coCode || `CO${q.questionNo}`;
+      if (!seen.has(code)) {
+        seen.add(code);
+        coCodesNeeded.push(code);
+      }
+    }
 
-    for (let i = 0; i < autoCoCount; i++) {
-      const coCode = `CO${i + 1}`;
+    const coIds = new Map<string, number>();
+    for (const coCode of coCodesNeeded) {
       let co = await client.query<{ id: number }>(
         `SELECT id FROM course_outcomes WHERE course_id = $1 AND co_code = $2`,
         [courseId, coCode]
       );
       if (co.rows.length === 0) {
+        const coNum = parseInt(coCode.replace(/[^0-9]/g, ''), 10) || coCodesNeeded.indexOf(coCode) + 1;
         co = await client.query<{ id: number }>(
           `INSERT INTO course_outcomes(course_id, co_code, description, display_order)
            VALUES ($1, $2, $3, $4) RETURNING id`,
-          [courseId, coCode, `Course Outcome ${i + 1}`, i + 1]
+          [courseId, coCode, `Course Outcome ${coNum}`, coNum]
         );
       }
       coIds.set(coCode, co.rows[0].id);
@@ -306,11 +316,17 @@ export async function processFilledTemplate(fileBuffer: Buffer): Promise<Process
       assessmentId = r.rows[0].id;
     }
 
-    // 6. Grading sheet
-    const sheet = await client.query<{ id: number }>(
-      `SELECT id FROM grading_sheets WHERE assessment_id = $1`, [assessmentId]
+    // 6. Grading sheet — create if new, or guard against re-uploading into a
+    //    sheet that has already advanced past the editable stages.
+    const sheet = await client.query<{ id: number; status: string }>(
+      `SELECT id, status FROM grading_sheets WHERE assessment_id = $1`, [assessmentId]
     );
-    if (sheet.rows.length === 0) {
+    if (sheet.rows.length > 0) {
+      const existingStatus = sheet.rows[0].status;
+      if (existingStatus === 'moderated' || existingStatus === 'verified' || existingStatus === 'published') {
+        throw new HttpError(409, `Cannot re-upload: assessment is already "${existingStatus}". Roll it back to "submitted" first.`);
+      }
+    } else {
       await client.query(
         `INSERT INTO grading_sheets(assessment_id, status) VALUES ($1, 'submitted')`,
         [assessmentId]

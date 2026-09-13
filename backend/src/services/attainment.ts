@@ -197,6 +197,7 @@ export async function calculateCourseAttainment(
 
     const attainmentPct =
       totalStudents > 0 ? (attainedCount / totalStudents) * 100 : 0;
+    const roundedPct = round1(attainmentPct);
 
     coAttainments.push({
       co_id: coId,
@@ -204,8 +205,8 @@ export async function calculateCourseAttainment(
       co_description: co.co_description,
       total_students: totalStudents,
       students_attained: attainedCount,
-      attainment_percentage: round1(attainmentPct),
-      met_threshold: attainmentPct >= threshold,
+      attainment_percentage: roundedPct,
+      met_threshold: roundedPct >= threshold,
       per_question: perQuestion.sort((a, b) => a.question_no - b.question_no),
     });
   }

@@ -46,6 +46,8 @@ export default function App() {
   // Load assessments when browsing
   useEffect(() => {
     if (browseCourseId == null) return;
+    setAssessments([]);
+    setActiveAssessmentId(null);
     listAssessments(browseCourseId).then(setAssessments).catch((e) => setError(e.message));
   }, [browseCourseId]);
 

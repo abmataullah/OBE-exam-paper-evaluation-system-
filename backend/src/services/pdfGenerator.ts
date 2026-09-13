@@ -22,6 +22,8 @@ interface TabulationInput {
   preparedBy?: string;
   moderatorBy?: string;
   chairmanBy?: string;
+  /** Override the attainment threshold (default 60). */
+  threshold?: number;
 }
 
 interface StudentRow {
@@ -433,6 +435,7 @@ async function loadTabulationData(
   const attainment = await calculateCourseAttainment({
     courseId: input.courseId,
     assessmentId: input.assessmentId,
+    threshold: input.threshold,
   });
 
   return [course, questions, students, attainment];

@@ -9,6 +9,8 @@ import {
   downloadTabulation,
   getSheetStatus,
   advanceSheet,
+  deleteAssessment,
+  previewTabulationHtml,
   type ProcessResult,
 } from './api';
 import type {
@@ -200,8 +202,62 @@ export default function App() {
     }
   }
 
+  async function handleDeleteAssessment() {
+    if (activeAssessmentId == null) return;
+    if (!confirm('Delete this assessment and all its marks? This cannot be undone.')) return;
+    setError(null);
+    try {
+      await deleteAssessment(activeAssessmentId);
+      setActiveAssessmentId(null);
+      setActiveCourseId(null);
+      setAttainment(null);
+      setSheet(null);
+      setProcessResult(null);
+      listCourses().then(setCourses).catch(() => {});
+      if (browseCourseId != null) {
+        listAssessments(browseCourseId).then(setAssessments).catch(() => {});
+      }
+      showSuccess('Assessment deleted.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed');
+    }
+  }
+
+  function handlePreviewHtml() {
+    if (activeCourseId == null || activeAssessmentId == null) return;
+    previewTabulationHtml(activeCourseId, activeAssessmentId, {
+      preparedBy: preparedBy || undefined,
+      moderatorBy: moderatorBy || undefined,
+      chairmanBy: chairmanBy || undefined,
+      threshold,
+    });
+  }
+
+  function handleExportAttainmentCsv() {
+    if (!attainment || attainment.co_attainments.length === 0) return;
+    const rows = [
+      ['CO Code', 'Description', 'Total Students', 'Students Attained', 'Attainment %', 'Met Threshold'],
+      ...attainment.co_attainments.map((co) => [
+        co.co_code,
+        co.co_description,
+        String(co.total_students),
+        String(co.students_attained),
+        co.attainment_percentage.toFixed(1),
+        co.met_threshold ? 'Yes' : 'No',
+      ]),
+    ];
+    const csv = rows.map((r) => r.map((c) => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    saveBlob(blob, `Attainment_${attainment.course_code}_${attainment.assessment_title}.csv`);
+    showSuccess('Attainment CSV exported.');
+  }
+
   const hardErrors = processResult?.errors ?? [];
   const activeAssessment = assessments.find((a) => a.id === activeAssessmentId);
+  const overallAttainment = attainment && attainment.co_attainments.length > 0
+    ? attainment.co_attainments.reduce((sum, co) => sum + co.attainment_percentage, 0) / attainment.co_attainments.length
+    : null;
+  const cosMet = attainment ? attainment.co_attainments.filter((co) => co.met_threshold).length : 0;
 
   return (
     <div className="min-h-full bg-slate-50">
@@ -363,30 +419,87 @@ export default function App() {
                     <p className="text-sm text-slate-500">
                       {attainment.course_code} — {attainment.course_title} · {attainment.assessment_title} · Threshold: {attainment.threshold}%
                     </p>
+
+                    {/* Summary card */}
+                    {overallAttainment != null && attainment.co_attainments.length > 0 && (
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
+                          <p className="text-2xl font-bold text-slate-900">{overallAttainment.toFixed(1)}%</p>
+                          <p className="text-xs text-slate-500">Overall Attainment</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
+                          <p className="text-2xl font-bold text-slate-900">{cosMet}/{attainment.co_attainments.length}</p>
+                          <p className="text-xs text-slate-500">COs Attained</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
+                          <p className={`text-2xl font-bold ${cosMet === attainment.co_attainments.length ? 'text-green-600' : 'text-amber-600'}`}>
+                            {cosMet === attainment.co_attainments.length ? 'PASS' : 'PARTIAL'}
+                          </p>
+                          <p className="text-xs text-slate-500">Course Status</p>
+                        </div>
+                      </div>
+                    )}
+
                     {attainment.co_attainments.length === 0 ? (
                       <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
                         No CO data. Ensure students are enrolled and marks are entered.
                       </p>
                     ) : (
-                      attainment.co_attainments.map((co) => (
-                        <div key={co.co_id} className="rounded-lg border border-slate-200 p-4">
-                          <div className="mb-2 flex items-center justify-between">
-                            <div>
-                              <span className="font-mono font-semibold">{co.co_code}</span>
-                              <span className="ml-2 text-sm text-slate-500">{co.co_description}</span>
-                            </div>
-                            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${co.met_threshold ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                              {co.attainment_percentage.toFixed(1)}% · {co.met_threshold ? 'Attained' : 'Not Attained'}
-                            </span>
-                          </div>
-                          <div className="h-5 w-full overflow-hidden rounded-full bg-slate-100">
-                            <div className={`h-full rounded-full ${co.met_threshold ? 'bg-green-500' : 'bg-red-400'}`} style={{ width: `${Math.min(co.attainment_percentage, 100)}%` }} />
-                          </div>
-                          <p className="mt-1 text-xs text-slate-400">
-                            {co.students_attained} of {co.total_students} students attained
-                          </p>
+                      <>
+                        <div className="flex justify-end">
+                          <button onClick={handleExportAttainmentCsv} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50">
+                            Export CSV
+                          </button>
                         </div>
-                      ))
+                        {attainment.co_attainments.map((co) => (
+                          <div key={co.co_id} className="rounded-lg border border-slate-200 p-4">
+                            <div className="mb-2 flex items-center justify-between">
+                              <div>
+                                <span className="font-mono font-semibold">{co.co_code}</span>
+                                <span className="ml-2 text-sm text-slate-500">{co.co_description}</span>
+                              </div>
+                              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${co.met_threshold ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                {co.attainment_percentage.toFixed(1)}% · {co.met_threshold ? 'Attained' : 'Not Attained'}
+                              </span>
+                            </div>
+                            <div className="h-5 w-full overflow-hidden rounded-full bg-slate-100">
+                              <div className={`h-full rounded-full ${co.met_threshold ? 'bg-green-500' : 'bg-red-400'}`} style={{ width: `${Math.min(co.attainment_percentage, 100)}%` }} />
+                            </div>
+                            <p className="mt-1 text-xs text-slate-400">
+                              {co.students_attained} of {co.total_students} students attained
+                            </p>
+                            {/* Per-question breakdown */}
+                            {co.per_question.length > 0 && (
+                              <div className="mt-3 overflow-hidden rounded border border-slate-100">
+                                <table className="w-full text-xs">
+                                  <thead className="bg-slate-50 text-left text-slate-500">
+                                    <tr>
+                                      <th className="px-3 py-1.5">Question</th>
+                                      <th className="px-3 py-1.5">Max Marks</th>
+                                      <th className="px-3 py-1.5">Attained</th>
+                                      <th className="px-3 py-1.5">Total</th>
+                                      <th className="px-3 py-1.5">%</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {co.per_question.map((pq) => (
+                                      <tr key={pq.question_id} className="text-slate-600">
+                                        <td className="px-3 py-1.5 font-mono">Q{pq.question_no}</td>
+                                        <td className="px-3 py-1.5">{pq.max_marks}</td>
+                                        <td className="px-3 py-1.5">{pq.attained}</td>
+                                        <td className="px-3 py-1.5">{pq.total}</td>
+                                        <td className={`px-3 py-1.5 font-medium ${pq.percentage >= attainment.threshold ? 'text-green-600' : 'text-red-500'}`}>
+                                          {pq.percentage.toFixed(1)}%
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </>
                     )}
                   </div>
                 ) : (
@@ -415,8 +528,11 @@ export default function App() {
                 <button onClick={handleDownloadPdf} disabled={pdfBusy} className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:opacity-50">
                   {pdfBusy ? 'Generating PDF...' : 'Download Tabulation PDF'}
                 </button>
+                <button onClick={handlePreviewHtml} className="ml-2 rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50">
+                  Preview HTML
+                </button>
                 <p className="mt-2 text-xs text-slate-400">
-                  Uses threshold: {threshold}%. PDF requires Chrome or Edge installed.
+                  Uses threshold: {threshold}%. PDF requires Chrome or Edge installed. Preview opens in a new tab (no Chrome needed).
                 </p>
               </div>
             </div>
@@ -549,9 +665,17 @@ export default function App() {
               </select>
             </div>
             {activeAssessment && (
-              <p className="mt-2 text-xs text-slate-400">
-                Viewing: {activeAssessment.title} · {activeAssessment.total_marks} marks · {activeAssessment.exam_date || 'no exam date'}
-              </p>
+              <div className="mt-3 flex items-center justify-between">
+                <p className="text-xs text-slate-400">
+                  Viewing: {activeAssessment.title} · {activeAssessment.total_marks} marks · {activeAssessment.exam_date || 'no exam date'}
+                </p>
+                <button
+                  onClick={handleDeleteAssessment}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+                >
+                  Delete Assessment
+                </button>
+              </div>
             )}
           </section>
         )}

@@ -249,6 +249,30 @@ router.patch(
   })
 );
 
+/**
+ * Delete an assessment (and all its questions/marks/sheet via CASCADE).
+ * Blocked if the sheet is moderated/verified/published — roll back first.
+ */
+router.delete(
+  '/assessments/:assessmentId',
+  asyncHandler(async (req, res) => {
+    const assessmentId = Number(req.params.assessmentId);
+    const sheet = await getSheetStatus(assessmentId);
+    if (sheet && (sheet.status === 'moderated' || sheet.status === 'verified' || sheet.status === 'published')) {
+      res.status(409).json({
+        error: `Cannot delete: assessment is "${sheet.status}". Roll back to "submitted" or "draft" first.`,
+      });
+      return;
+    }
+    const r = await query(`DELETE FROM assessments WHERE id = $1 RETURNING id`, [assessmentId]);
+    if (r.rowCount === 0) {
+      res.status(404).json({ error: 'Assessment not found.' });
+      return;
+    }
+    res.json({ ok: true, assessmentId });
+  })
+);
+
 // ---- error handler (last) -------------------------------------------------
 router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   let status = errorStatus(err);

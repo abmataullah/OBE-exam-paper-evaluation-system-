@@ -429,4 +429,96 @@ describe('Bug fixes — regression tests', () => {
     html = await r.text();
     assert.match(html, /75%/);
   });
+
+  // Enhancement: delete assessment endpoint
+  test('Enhancement: DELETE /api/assessments/:id removes an assessment', async () => {
+    // Upload a fresh file to create an assessment
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 995';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Delete Test';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Quiz Del';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '55555001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Del Test';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-delete.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'delete.xlsx');
+    let resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 200);
+    const body = await resp.json() as { ok: boolean; courseId: number; assessmentId: number };
+
+    // Delete it
+    resp = await fetch(`${BASE}/api/assessments/${body.assessmentId}`, { method: 'DELETE' });
+    assert.equal(resp.status, 200);
+    const delBody = await resp.json() as { ok: boolean };
+    assert.equal(delBody.ok, true);
+
+    // Verify it's gone (attainment should 404/error)
+    resp = await fetch(`${BASE}/api/courses/${body.courseId}/assessments`);
+    const list = await resp.json() as Array<{ id: number }>;
+    assert.ok(!list.some((a) => a.id === body.assessmentId), 'assessment removed from list');
+  });
+
+  test('Enhancement: DELETE blocked for moderated sheet (409)', async () => {
+    // Upload + advance to moderated, then try to delete
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const ws = wb.getWorksheet('Grading')!;
+    const L = require('../services/excelGenerator').LAYOUT;
+    ws.getCell(L.ROW_DEPT, 2).value = 'Dept of CSE';
+    ws.getCell(L.ROW_PROGRAM, 2).value = 'BSc CSE';
+    ws.getCell(L.ROW_COURSE, 2).value = 'CSE 994';
+    ws.getCell(L.ROW_COURSE, 5).value = 'Delete Guard';
+    ws.getCell(L.ROW_SEMESTER, 2).value = '2024-1/2';
+    ws.getCell(L.ROW_ASSESSMENT, 2).value = 'Quiz DelGuard';
+    ws.getCell(L.ROW_ASSESSMENT, 6).value = 'quiz';
+    ws.getCell(L.ROW_ASSESSMENT, 8).value = 10;
+    ws.getCell(L.ROW_Q_FIRST, L.COL_Q_MAX).value = 10;
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_ROLL).value = '44444001';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_NAME).value = 'Guard';
+    ws.getCell(L.ROW_STUDENT_FIRST, L.COL_Q_FIRST).value = 7;
+    const outPath = join(tmpdir(), 'obe-delguard.xlsx');
+    writeFileSync(outPath, Buffer.from(await wb.xlsx.writeBuffer()));
+
+    const fd = new FormData();
+    fd.append('file', new Blob([readFileSync(outPath)]), 'delguard.xlsx');
+    let resp = await fetch(`${BASE}/api/process`, { method: 'POST', body: fd });
+    assert.equal(resp.status, 200);
+    const body = await resp.json() as { ok: boolean; assessmentId: number };
+
+    // Advance to moderated
+    resp = await fetch(`${BASE}/api/assessments/${body.assessmentId}/sheet`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'moderated', actor: 'Mod' }),
+    });
+    assert.equal(resp.status, 200);
+
+    // Delete should be blocked
+    resp = await fetch(`${BASE}/api/assessments/${body.assessmentId}`, { method: 'DELETE' });
+    assert.equal(resp.status, 409);
+    const err = await resp.json() as { error: string };
+    assert.match(err.error, /moderated/);
+  });
+
+  // Enhancement: template includes an Instructions sheet
+  test('Enhancement: blank template includes an Instructions sheet', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(readFileSync(blankPath2) as unknown as ArrayBuffer);
+    const instr = wb.getWorksheet('Instructions');
+    assert.ok(instr, 'Instructions sheet exists');
+    const titleCell = instr.getCell(1, 1).value;
+    assert.match(String(titleCell), /How to fill/);
+  });
 });

@@ -110,6 +110,28 @@ export async function advanceSheet(
   return json(res);
 }
 
+/** Delete an assessment (and all its questions/marks/sheet).
+ *  Blocked if the sheet is moderated/verified/published. */
+export async function deleteAssessment(assessmentId: number): Promise<{ ok: boolean }> {
+  const res = await fetch(`${BASE}/assessments/${assessmentId}`, { method: 'DELETE' });
+  return json(res);
+}
+
+/** Open the tabulation HTML preview in a new tab (no Chrome needed). */
+export function previewTabulationHtml(
+  courseId: number,
+  assessmentId: number,
+  sigs?: { preparedBy?: string; moderatorBy?: string; chairmanBy?: string; threshold?: number }
+): void {
+  const params = new URLSearchParams();
+  if (sigs?.preparedBy) params.set('preparedBy', sigs.preparedBy);
+  if (sigs?.moderatorBy) params.set('moderatorBy', sigs.moderatorBy);
+  if (sigs?.chairmanBy) params.set('chairmanBy', sigs.chairmanBy);
+  if (sigs?.threshold != null) params.set('threshold', String(sigs.threshold));
+  params.set('format', 'html');
+  window.open(`${BASE}/courses/${courseId}/assessments/${assessmentId}/tabulation?${params.toString()}`, '_blank');
+}
+
 /** Trigger a browser download from a Blob. */
 export function saveBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
